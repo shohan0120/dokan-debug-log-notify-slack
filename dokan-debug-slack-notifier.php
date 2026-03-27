@@ -1,11 +1,17 @@
 <?php
 /**
- * Plugin Name: Dokan Debug Slack Notifier
- * Plugin URI:  https://dokan.co
- * Description: Watches wp-content/debug.log after every page load and sends a Slack notification whenever a PHP Deprecated, Notice, Warning, or Fatal Error from dokan-lite or dokan-pro appears.
- * Version:     1.1.0
- * Author:      WeDevs
- * License:     GPL-2.0+
+ * Plugin Name:       Dokan Debug Slack Notifier
+ * Plugin URI:        https://github.com/shohan0120/dokan-debug-log-notify-slack
+ * Description:       Watches wp-content/debug.log after every page load and sends a Slack notification whenever a PHP Deprecated, Notice, Warning, or Fatal Error from dokan-lite or dokan-pro appears.
+ * Version:           1.1.0
+ * Requires at least: 5.8
+ * Requires PHP:      8.0
+ * Author:            Shohanur Rahman
+ * Author URI:        https://github.com/shohan0120
+ * License:           GPL-2.0+
+ * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
+ * Text Domain:       dokan-debug-slack-notifier
+ * Domain Path:       /languages
  */
 
 defined( 'ABSPATH' ) || exit;

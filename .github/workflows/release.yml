@@ -1,0 +1,67 @@
+name: Release
+
+# Triggers when you push a version tag like v1.2.0
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  build-and-release:
+    name: Build ZIP & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout the tagged commit ──────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Extract version from the tag (strips leading "v") ───────────
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Build the ZIP ───────────────────────────────────────────────
+      #   Excludes developer-only files that end-users don't need.
+      - name: Build plugin ZIP
+        run: |
+          PLUGIN_SLUG="dokan-debug-log-notify-slack"
+          ZIP_NAME="${PLUGIN_SLUG}-${{ steps.version.outputs.VERSION }}.zip"
+
+          # Create a temp folder named after the plugin slug (WP convention)
+          mkdir -p "/tmp/${PLUGIN_SLUG}"
+          rsync -av --exclude='.git' \
+                    --exclude='.github' \
+                    --exclude='.gitignore' \
+                    --exclude='*.zip' \
+                    . "/tmp/${PLUGIN_SLUG}/"
+
+          # Zip from /tmp so the archive extracts to dokan-debug-log-notify-slack/
+          cd /tmp
+          zip -r "${GITHUB_WORKSPACE}/${ZIP_NAME}" "${PLUGIN_SLUG}/"
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+
+      # ── 4. Extract release notes for this version from CHANGELOG.md ───
+      - name: Extract release notes
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          # Grab the block between this version heading and the next one
+          NOTES=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          # Store as multiline env var
+          echo "NOTES<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES"     >> "$GITHUB_OUTPUT"
+          echo "EOF"        >> "$GITHUB_OUTPUT"
+
+      # ── 5. Create the GitHub Release and attach the ZIP ────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.version.outputs.VERSION }}"
+          body: ${{ steps.notes.outputs.NOTES }}
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
