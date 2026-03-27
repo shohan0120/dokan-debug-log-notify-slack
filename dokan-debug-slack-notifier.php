@@ -45,7 +45,9 @@ class DDSN_Plugin {
         add_action( 'admin_init',  [ __CLASS__, 'register_settings' ] );
         add_action( 'wp_ajax_ddsn_reset_offset',  [ __CLASS__, 'ajax_reset_offset' ] );
         add_action( 'wp_ajax_ddsn_toggle_stop',   [ __CLASS__, 'ajax_toggle_stop' ] );
+        add_action( 'wp_ajax_ddsn_add_ignore',    [ __CLASS__, 'ajax_add_ignore' ] );
         add_action( 'wp_ajax_ddsn_remove_ignore', [ __CLASS__, 'ajax_remove_ignore' ] );
+        add_action( 'wp_ajax_ddsn_clear_ignores', [ __CLASS__, 'ajax_clear_ignores' ] );
     }
 
     /* -------------------------------------------------------------------------
@@ -173,33 +175,63 @@ class DDSN_Plugin {
             <!-- ── Ignore List ───────────────────────────────────────── -->
             <h2>Ignore List</h2>
             <p>
-                Paste any part of a log line (e.g. a function name, file path, or the whole line) — one entry per line.<br>
-                Any future log entry that <strong>contains</strong> that text will be silently skipped.<br>
-                <em>Remove the text from this box and save to re-enable notifications for it.</em>
+                Paste any part of a log line (a function name, file path, or the whole line) — one entry per line.<br>
+                Any log entry that <strong>contains</strong> that text will be silently skipped until you remove it.
             </p>
 
-            <form method="post" action="options.php" id="ddsn-ignore-form">
-                <?php settings_fields( 'ddsn_group' ); ?>
-                <input type="hidden" name="<?php echo esc_attr( DDSN_OPTION_WEBHOOK ); ?>"  value="<?php echo esc_attr( get_option( DDSN_OPTION_WEBHOOK ) ); ?>">
-                <input type="hidden" name="<?php echo esc_attr( DDSN_OPTION_COOLDOWN ); ?>" value="<?php echo esc_attr( get_option( DDSN_OPTION_COOLDOWN, 15 ) ); ?>">
-
-                <textarea name="<?php echo esc_attr( DDSN_OPTION_IGNORED ); ?>"
-                          id="ddsn-ignore-textarea"
-                          rows="10"
-                          style="width:100%;max-width:800px;font-family:monospace;font-size:12px;"
-                          placeholder="Paste a log line or any fragment to ignore it, one per line…"
-                ><?php echo esc_textarea( $ignored_text ); ?></textarea>
-
-                <br>
+            <!-- Active ignored patterns as removable tags -->
+            <div id="ddsn-ignore-tags-wrap" style="margin-bottom:12px;">
                 <?php if ( ! empty( $ignored ) ) : ?>
-                    <p style="color:#888;font-size:12px;">
-                        <?php echo count( $ignored ); ?> pattern(s) currently ignored.
-                        <a href="#" id="ddsn-clear-all-ignores">Clear all</a>
+                    <p style="margin:0 0 8px;font-size:13px;color:#444;">
+                        <strong><?php echo count( $ignored ); ?></strong> pattern(s) currently ignored:
                     </p>
+                    <div id="ddsn-ignore-tags" style="display:flex;flex-wrap:wrap;gap:6px;max-width:800px;">
+                        <?php foreach ( $ignored as $i => $pattern ) : ?>
+                        <span class="ddsn-tag" data-index="<?php echo (int) $i; ?>" style="
+                            display:inline-flex;align-items:center;gap:6px;
+                            background:#f0f0f0;border:1px solid #ccc;border-radius:4px;
+                            padding:4px 10px;font-family:monospace;font-size:12px;max-width:100%;word-break:break-all;">
+                            <span class="ddsn-tag-text"><?php echo esc_html( $pattern ); ?></span>
+                            <button type="button" class="ddsn-remove-tag" title="Remove this pattern" style="
+                                background:none;border:none;cursor:pointer;color:#dc3232;
+                                font-size:16px;line-height:1;padding:0;flex-shrink:0;"
+                                data-index="<?php echo (int) $i; ?>">×</button>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <p style="margin:8px 0 0;">
+                        <button type="button" id="ddsn-clear-all-ignores" class="button button-link-delete" style="color:#dc3232;">
+                            × Clear all ignored patterns
+                        </button>
+                        <span id="ddsn-ignore-count" style="margin-left:10px;font-size:12px;color:#888;">
+                            (<?php echo count( $ignored ); ?> active)
+                        </span>
+                    </p>
+                <?php else : ?>
+                    <div id="ddsn-ignore-tags" style="display:flex;flex-wrap:wrap;gap:6px;max-width:800px;"></div>
+                    <p id="ddsn-no-ignores" style="color:#888;font-style:italic;font-size:13px;">
+                        No patterns ignored yet.
+                    </p>
+                    <span id="ddsn-ignore-count" style="display:none;font-size:12px;color:#888;"></span>
                 <?php endif; ?>
+            </div>
 
-                <?php submit_button( 'Save Ignore List', 'secondary', 'submit-ignores' ); ?>
-            </form>
+            <!-- Add new patterns -->
+            <div style="max-width:800px;">
+                <label for="ddsn-ignore-textarea" style="font-weight:600;display:block;margin-bottom:4px;">
+                    Add new pattern(s) to ignore:
+                </label>
+                <textarea id="ddsn-ignore-textarea"
+                          rows="5"
+                          style="width:100%;font-family:monospace;font-size:12px;"
+                          placeholder="Paste a log line or any fragment, one per line…"></textarea>
+                <p style="margin:6px 0 0;">
+                    <button type="button" id="ddsn-add-ignore" class="button button-secondary">
+                        + Add to Ignore List
+                    </button>
+                    <span id="ddsn-add-ignore-msg" style="margin-left:10px;font-weight:600;display:none;"></span>
+                </p>
+            </div>
 
             <hr>
 
@@ -233,20 +265,151 @@ class DDSN_Plugin {
             const nonces = {
                 reset  : '<?php echo esc_js( wp_create_nonce( 'ddsn_reset' ) ); ?>',
                 stop   : '<?php echo esc_js( wp_create_nonce( 'ddsn_stop' ) ); ?>',
+                ignore : '<?php echo esc_js( wp_create_nonce( 'ddsn_ignore' ) ); ?>',
             };
 
+            /* ── Helpers ───────────────────────────────────────────── */
+            function post(action, extra) {
+                const params = new URLSearchParams({ action, _ajax_nonce: nonces.ignore, ...extra });
+                return fetch(ajaxurl, {
+                    method  : 'POST',
+                    headers : { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body    : params.toString(),
+                }).then(r => r.json());
+            }
+
+            function rebuildTags(patterns) {
+                const wrap    = document.getElementById('ddsn-ignore-tags');
+                const noMsg   = document.getElementById('ddsn-no-ignores');
+                const counter = document.getElementById('ddsn-ignore-count');
+
+                wrap.innerHTML = '';
+
+                if (!patterns || patterns.length === 0) {
+                    if (noMsg)   { noMsg.style.display   = ''; }
+                    if (counter) { counter.style.display = 'none'; }
+                    const clearAllBtn = document.getElementById('ddsn-clear-all-ignores');
+                    if (clearAllBtn) clearAllBtn.style.display = 'none';
+                    return;
+                }
+
+                if (noMsg)   { noMsg.style.display   = 'none'; }
+                if (counter) {
+                    counter.style.display = 'inline';
+                    counter.textContent   = '(' + patterns.length + ' active)';
+                }
+                const clearAllBtn = document.getElementById('ddsn-clear-all-ignores');
+                if (clearAllBtn) clearAllBtn.style.display = '';
+
+                patterns.forEach(function (pattern, index) {
+                    const tag = document.createElement('span');
+                    tag.className = 'ddsn-tag';
+                    tag.dataset.index = index;
+                    tag.style.cssText = 'display:inline-flex;align-items:center;gap:6px;background:#f0f0f0;border:1px solid #ccc;border-radius:4px;padding:4px 10px;font-family:monospace;font-size:12px;max-width:100%;word-break:break-all;';
+
+                    const text = document.createElement('span');
+                    text.className = 'ddsn-tag-text';
+                    text.textContent = pattern;
+
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'ddsn-remove-tag';
+                    btn.title = 'Remove this pattern';
+                    btn.textContent = '×';
+                    btn.dataset.index = index;
+                    btn.style.cssText = 'background:none;border:none;cursor:pointer;color:#dc3232;font-size:16px;line-height:1;padding:0;flex-shrink:0;';
+
+                    tag.appendChild(text);
+                    tag.appendChild(btn);
+                    wrap.appendChild(tag);
+                });
+            }
+
+            /* ── Remove single pattern ─────────────────────────────── */
+            document.getElementById('ddsn-ignore-tags').addEventListener('click', function (e) {
+                const btn = e.target.closest('.ddsn-remove-tag');
+                if (!btn) return;
+
+                const index = parseInt(btn.dataset.index, 10);
+                btn.disabled = true;
+                btn.textContent = '…';
+
+                post('ddsn_remove_ignore', { index }).then(d => {
+                    if (d.success) {
+                        rebuildTags(d.data.ignored);
+                    } else {
+                        btn.disabled    = false;
+                        btn.textContent = '×';
+                    }
+                });
+            });
+
+            /* ── Add new patterns ──────────────────────────────────── */
+            document.getElementById('ddsn-add-ignore').addEventListener('click', function () {
+                const textarea = document.getElementById('ddsn-ignore-textarea');
+                const raw      = textarea.value.trim();
+                const msg      = document.getElementById('ddsn-add-ignore-msg');
+
+                if (!raw) {
+                    msg.style.display = 'inline';
+                    msg.style.color   = '#dc3232';
+                    msg.textContent   = 'Please enter at least one pattern.';
+                    return;
+                }
+
+                const addBtn   = document.getElementById('ddsn-add-ignore');
+                addBtn.disabled = true;
+                addBtn.textContent = 'Saving…';
+
+                post('ddsn_add_ignore', { patterns: raw }).then(d => {
+                    addBtn.disabled    = false;
+                    addBtn.textContent = '+ Add to Ignore List';
+                    msg.style.display  = 'inline';
+
+                    if (d.success) {
+                        textarea.value    = '';
+                        msg.style.color   = '#46b450';
+                        msg.textContent   = '✓ Saved! ' + d.data.added + ' pattern(s) added.';
+                        rebuildTags(d.data.ignored);
+                    } else {
+                        msg.style.color = '#dc3232';
+                        msg.textContent = 'Error saving. Please try again.';
+                    }
+
+                    setTimeout(() => { msg.style.display = 'none'; }, 4000);
+                });
+            });
+
+            /* ── Clear all ─────────────────────────────────────────── */
+            const clearAllBtn = document.getElementById('ddsn-clear-all-ignores');
+            if (clearAllBtn) {
+                clearAllBtn.addEventListener('click', function () {
+                    if (!confirm('Remove all ignored patterns? Notifications for these errors will resume.')) return;
+                    clearAllBtn.disabled    = true;
+                    clearAllBtn.textContent = 'Clearing…';
+
+                    post('ddsn_clear_ignores', {}).then(d => {
+                        clearAllBtn.disabled    = false;
+                        clearAllBtn.textContent = '× Clear all ignored patterns';
+                        if (d.success) {
+                            rebuildTags([]);
+                        }
+                    });
+                });
+            }
+
             /* ── Stop / Resume ─────────────────────────────────────── */
-            const stopBtn  = document.getElementById('ddsn-toggle-stop');
-            const stopMsg  = document.getElementById('ddsn-stop-msg');
-            const badge    = document.getElementById('ddsn-status-badge');
-            const notice   = document.getElementById('ddsn-stopped-notice');
+            const stopBtn = document.getElementById('ddsn-toggle-stop');
+            const stopMsg = document.getElementById('ddsn-stop-msg');
+            const badge   = document.getElementById('ddsn-status-badge');
+            const notice  = document.getElementById('ddsn-stopped-notice');
 
             stopBtn.addEventListener('click', function () {
                 stopBtn.disabled = true;
                 fetch(ajaxurl, {
                     method  : 'POST',
                     headers : { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body    : 'action=ddsn_toggle_stop&_ajax_nonce=' + nonces.stop
+                    body    : 'action=ddsn_toggle_stop&_ajax_nonce=' + nonces.stop,
                 })
                 .then(r => r.json())
                 .then(d => {
@@ -254,26 +417,16 @@ class DDSN_Plugin {
                     if (!d.success) return;
 
                     const isStopped = d.data.stopped;
-
-                    // Button
-                    stopBtn.textContent = isStopped ? '▶ Resume Notifications' : '⏹ Stop Notifications';
-                    stopBtn.style.background    = isStopped ? '#46b450' : '#dc3232';
-                    stopBtn.style.borderColor   = isStopped ? '#46b450' : '#dc3232';
-                    stopBtn.className           = 'button ' + (isStopped ? 'button-primary' : 'button-secondary');
-
-                    // Badge
-                    badge.textContent        = isStopped ? 'STOPPED' : 'RUNNING';
-                    badge.style.background   = isStopped ? '#dc3232' : '#46b450';
-
-                    // Notice bar
+                    stopBtn.textContent          = isStopped ? '▶ Resume Notifications' : '⏹ Stop Notifications';
+                    stopBtn.style.background     = isStopped ? '#46b450' : '#dc3232';
+                    stopBtn.style.borderColor    = isStopped ? '#46b450' : '#dc3232';
+                    stopBtn.className            = 'button ' + (isStopped ? 'button-primary' : 'button-secondary');
+                    badge.textContent            = isStopped ? 'STOPPED' : 'RUNNING';
+                    badge.style.background       = isStopped ? '#dc3232' : '#46b450';
                     if (notice) notice.style.display = isStopped ? '' : 'none';
-
-                    // Inline message
-                    stopMsg.style.display = 'inline';
-                    stopMsg.style.color   = isStopped ? '#dc3232' : '#46b450';
-                    stopMsg.textContent   = isStopped
-                        ? 'Notifications stopped.'
-                        : 'Notifications resumed.';
+                    stopMsg.style.display        = 'inline';
+                    stopMsg.style.color          = isStopped ? '#dc3232' : '#46b450';
+                    stopMsg.textContent          = isStopped ? 'Notifications stopped.' : 'Notifications resumed.';
                 });
             });
 
@@ -282,7 +435,7 @@ class DDSN_Plugin {
                 fetch(ajaxurl, {
                     method  : 'POST',
                     headers : { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body    : 'action=ddsn_reset_offset&_ajax_nonce=' + nonces.reset
+                    body    : 'action=ddsn_reset_offset&_ajax_nonce=' + nonces.reset,
                 })
                 .then(r => r.json())
                 .then(d => {
@@ -291,15 +444,6 @@ class DDSN_Plugin {
                     }
                 });
             });
-
-            /* ── Clear all ignores ─────────────────────────────────── */
-            const clearAll = document.getElementById('ddsn-clear-all-ignores');
-            if (clearAll) {
-                clearAll.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    document.getElementById('ddsn-ignore-textarea').value = '';
-                });
-            }
         })();
         </script>
         <?php
@@ -330,6 +474,22 @@ class DDSN_Plugin {
         wp_send_json_success( [ 'stopped' => $new ] );
     }
 
+    public static function ajax_add_ignore(): void {
+        check_ajax_referer( 'ddsn_ignore' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error();
+        }
+        $raw      = sanitize_textarea_field( wp_unslash( $_POST['patterns'] ?? '' ) );
+        $new      = array_values( array_filter( array_map( 'trim', explode( "\n", $raw ) ) ) );
+        $existing = (array) get_option( DDSN_OPTION_IGNORED, [] );
+        $merged   = array_values( array_unique( array_merge( $existing, $new ) ) );
+        update_option( DDSN_OPTION_IGNORED, $merged );
+        wp_send_json_success( [
+            'ignored' => $merged,
+            'added'   => count( $new ),
+        ] );
+    }
+
     public static function ajax_remove_ignore(): void {
         check_ajax_referer( 'ddsn_ignore' );
         if ( ! current_user_can( 'manage_options' ) ) {
@@ -339,9 +499,19 @@ class DDSN_Plugin {
         $ignored = (array) get_option( DDSN_OPTION_IGNORED, [] );
         if ( isset( $ignored[ $index ] ) ) {
             array_splice( $ignored, $index, 1 );
-            update_option( DDSN_OPTION_IGNORED, array_values( $ignored ) );
+            $ignored = array_values( $ignored );
+            update_option( DDSN_OPTION_IGNORED, $ignored );
         }
         wp_send_json_success( [ 'ignored' => $ignored ] );
+    }
+
+    public static function ajax_clear_ignores(): void {
+        check_ajax_referer( 'ddsn_ignore' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error();
+        }
+        update_option( DDSN_OPTION_IGNORED, [] );
+        wp_send_json_success( [ 'ignored' => [] ] );
     }
 
     /* -------------------------------------------------------------------------
